@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { ComposedChart, AreaChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 // ============================================================
@@ -189,7 +189,7 @@ const fmt = (n) => {
 const fmtMan = (n) => Math.round(n / 10000).toLocaleString() + "万円";
 
 // --- FIRE Progress Ring ---
-function FireProgressRing({ ratio, fireYear, currentAge }) {
+function FireProgressRing({ ratio, fireYear, currentAge, fireIncome, fireExpenses }) {
   const pct = Math.min(ratio * 100, 100);
   const achieved = pct >= 100;
   const r = 54;
@@ -282,8 +282,14 @@ function FireProgressRing({ ratio, fireYear, currentAge }) {
           <div style={{ display: "flex", gap: 16, marginTop: 12 }}>
             <div>
               <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)" }}>FIRE収入</div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
-                {fmtMan(ratio > 0 ? Math.round(ratio * 100) > 100 ? 0 : 0 : 0)}
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#4ade80", fontVariantNumeric: "tabular-nums" }}>
+                {fmtMan(fireIncome)}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)" }}>年間支出</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#f87171", fontVariantNumeric: "tabular-nums" }}>
+                {fmtMan(fireExpenses)}
               </div>
             </div>
           </div>
@@ -311,12 +317,37 @@ function Section({ title, open, onToggle, children }) {
 }
 
 function Slider({ label, value, onChange, min, max, step = 1, unit = "", formatter }) {
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState("");
   const display = formatter ? formatter(value) : `${value.toLocaleString()}${unit}`;
+
+  const startEdit = () => {
+    setEditValue(String(value));
+    setEditing(true);
+  };
+  const commitEdit = () => {
+    const n = Number(editValue);
+    if (!isNaN(n)) {
+      const clamped = Math.min(max, Math.max(min, Math.round(n / step) * step));
+      onChange(clamped);
+    }
+    setEditing(false);
+  };
+
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
         <span style={{ color: "#4a5060" }}>{label}</span>
-        <span style={{ fontWeight: 600, color: "#1a2332", fontVariantNumeric: "tabular-nums" }}>{display}</span>
+        {editing ? (
+          <input type="number" value={editValue} onChange={e => setEditValue(e.target.value)}
+            onBlur={commitEdit} onKeyDown={e => e.key === "Enter" && commitEdit()}
+            autoFocus min={min} max={max} step={step}
+            style={{ width: 80, fontSize: 13, fontWeight: 600, textAlign: "right", border: "1px solid #2d7a5f",
+              borderRadius: 4, padding: "1px 4px", outline: "none", fontVariantNumeric: "tabular-nums" }} />
+        ) : (
+          <span onClick={startEdit} style={{ fontWeight: 600, color: "#1a2332", fontVariantNumeric: "tabular-nums",
+            cursor: "pointer", borderBottom: "1px dashed #ccc" }}>{display}</span>
+        )}
       </div>
       <input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(Number(e.target.value))}
         style={{ width: "100%", accentColor: "#2d7a5f" }} />
@@ -414,31 +445,78 @@ function CustomTooltip({ active, payload }) {
 // ============================================================
 const defaultChild = () => ({ age: 2, edu: { elementary: "public", middle: "public", high: "public", university: "public" } });
 
+const DEFAULTS = {
+  currentAge: 37, simYears: 28, hasSpouse: true, hourlyRate: 4500, monthlyHours: 80,
+  mainExpenseRate: 10, sideIncome: 200, sideExpenseRate: 15, spouseIncome: 190,
+  monthlyLiving: 20, monthlyMortgage: 9, mortgageYears: 34, investmentAssets: 3300,
+  cashAssets: 500, returnRate: 5, nisaAnnual: 120, blueReturn: "65", mutualAid: 3,
+  ideco: 6.8, isConsumptionTaxPayer: true, consumptionTaxCategory: "service",
+};
+
+function parseURL() {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    const s = p.get("s");
+    if (!s) return null;
+    return JSON.parse(decodeURIComponent(atob(s)));
+  } catch { return null; }
+}
+
+function syncURL(state) {
+  const encoded = btoa(encodeURIComponent(JSON.stringify(state)));
+  const url = new URL(window.location);
+  url.searchParams.set("s", encoded);
+  window.history.replaceState(null, "", url);
+}
+
 export default function App() {
-  const [currentAge, setCurrentAge] = useState(37);
-  const [simYears, setSimYears] = useState(28);
-  const [hasSpouse, setHasSpouse] = useState(true);
-  const [hourlyRate, setHourlyRate] = useState(4500);
-  const [monthlyHours, setMonthlyHours] = useState(80);
-  const [mainExpenseRate, setMainExpenseRate] = useState(10);
-  const [sideIncome, setSideIncome] = useState(200);
-  const [sideExpenseRate, setSideExpenseRate] = useState(15);
-  const [spouseIncome, setSpouseIncome] = useState(190);
-  const [monthlyLiving, setMonthlyLiving] = useState(20);
-  const [monthlyMortgage, setMonthlyMortgage] = useState(9);
-  const [mortgageYears, setMortgageYears] = useState(34);
-  const [children, setChildren] = useState([defaultChild()]);
-  const [investmentAssets, setInvestmentAssets] = useState(3300);
-  const [cashAssets, setCashAssets] = useState(500);
-  const [returnRate, setReturnRate] = useState(5);
-  const [nisaAnnual, setNisaAnnual] = useState(120);
-  const [blueReturn, setBlueReturn] = useState("65");
-  const [mutualAid, setMutualAid] = useState(3);
-  const [ideco, setIdeco] = useState(6.8);
-  const [isConsumptionTaxPayer, setIsConsumptionTaxPayer] = useState(true);
-  const [consumptionTaxCategory, setConsumptionTaxCategory] = useState("service");
+  const saved = useMemo(() => parseURL(), []);
+  const d = { ...DEFAULTS, ...saved };
+
+  const [currentAge, setCurrentAge] = useState(d.currentAge);
+  const [simYears, setSimYears] = useState(d.simYears);
+  const [hasSpouse, setHasSpouse] = useState(d.hasSpouse);
+  const [hourlyRate, setHourlyRate] = useState(d.hourlyRate);
+  const [monthlyHours, setMonthlyHours] = useState(d.monthlyHours);
+  const [mainExpenseRate, setMainExpenseRate] = useState(d.mainExpenseRate);
+  const [sideIncome, setSideIncome] = useState(d.sideIncome);
+  const [sideExpenseRate, setSideExpenseRate] = useState(d.sideExpenseRate);
+  const [spouseIncome, setSpouseIncome] = useState(d.spouseIncome);
+  const [monthlyLiving, setMonthlyLiving] = useState(d.monthlyLiving);
+  const [monthlyMortgage, setMonthlyMortgage] = useState(d.monthlyMortgage);
+  const [mortgageYears, setMortgageYears] = useState(d.mortgageYears);
+  const [children, setChildren] = useState(d.children || [defaultChild()]);
+  const [investmentAssets, setInvestmentAssets] = useState(d.investmentAssets);
+  const [cashAssets, setCashAssets] = useState(d.cashAssets);
+  const [returnRate, setReturnRate] = useState(d.returnRate);
+  const [nisaAnnual, setNisaAnnual] = useState(d.nisaAnnual);
+  const [blueReturn, setBlueReturn] = useState(d.blueReturn);
+  const [mutualAid, setMutualAid] = useState(d.mutualAid);
+  const [ideco, setIdeco] = useState(d.ideco);
+  const [isConsumptionTaxPayer, setIsConsumptionTaxPayer] = useState(d.isConsumptionTaxPayer);
+  const [consumptionTaxCategory, setConsumptionTaxCategory] = useState(d.consumptionTaxCategory);
   const [openSections, setOpenSections] = useState({ basic: true, main: true, side: true, living: false, children: false, assets: false, tax: false });
   const [showTable, setShowTable] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const allState = useMemo(() => ({
+    currentAge, simYears, hasSpouse, hourlyRate, monthlyHours, mainExpenseRate,
+    sideIncome, sideExpenseRate, spouseIncome, monthlyLiving, monthlyMortgage,
+    mortgageYears, children, investmentAssets, cashAssets, returnRate, nisaAnnual,
+    blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory,
+  }), [currentAge, simYears, hasSpouse, hourlyRate, monthlyHours, mainExpenseRate,
+    sideIncome, sideExpenseRate, spouseIncome, monthlyLiving, monthlyMortgage,
+    mortgageYears, children, investmentAssets, cashAssets, returnRate, nisaAnnual,
+    blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory]);
+
+  useEffect(() => { syncURL(allState); }, [allState]);
+
+  const copyURL = useCallback(() => {
+    navigator.clipboard.writeText(window.location.href).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, []);
 
   const toggleSection = (key) => setOpenSections(s => ({ ...s, [key]: !s[key] }));
   const addChild = () => { if (children.length < 3) setChildren([...children, defaultChild()]); };
@@ -466,9 +544,20 @@ export default function App() {
       fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif',
     }}>
       <header style={{ padding: "28px 0 20px", borderBottom: "2px solid #1a2332", marginBottom: 24 }}>
-        <div style={{ fontSize: 11, letterSpacing: "0.2em", color: "#8a919c", fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>Side FIRE Simulator</div>
-        <h1 style={{ fontSize: 24, fontWeight: 700, color: "#1a2332", margin: 0 }}>サイドFIRE・フリーランス転向シミュレーター</h1>
-        <p style={{ fontSize: 12, color: "#8a919c", marginTop: 6 }}>フリーランス特有の税・社会保険を考慮した資産シミュレーション</p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: 11, letterSpacing: "0.2em", color: "#8a919c", fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>Side FIRE Simulator</div>
+            <h1 style={{ fontSize: 24, fontWeight: 700, color: "#1a2332", margin: 0 }}>サイドFIRE・フリーランス転向シミュレーター</h1>
+            <p style={{ fontSize: 12, color: "#8a919c", marginTop: 6 }}>フリーランス特有の税・社会保険を考慮した資産シミュレーション</p>
+          </div>
+          <button onClick={copyURL} style={{
+            fontSize: 12, color: copied ? "#fff" : "#2d7a5f", background: copied ? "#2d7a5f" : "#fff",
+            border: "1px solid #2d7a5f", borderRadius: 6, padding: "6px 12px", cursor: "pointer",
+            whiteSpace: "nowrap", marginTop: 8, transition: "all 0.2s",
+          }}>
+            {copied ? "✓ コピーしました" : "📋 設定URLをコピー"}
+          </button>
+        </div>
       </header>
 
       <style>{`
@@ -510,7 +599,7 @@ export default function App() {
             <Slider label="月額生活費（住宅ローン除く）" value={monthlyLiving} onChange={setMonthlyLiving} min={5} max={50} unit="万円" />
             <Slider label="住宅ローン月額" value={monthlyMortgage} onChange={setMonthlyMortgage} min={0} max={25} step={0.5}
               formatter={v => v === 0 ? "なし" : `${v}万円`} />
-            {monthlyMortgage > 0 && <Slider label="残年数" value={mortgageYears} onChange={setMortgageYears} min={0} max={35} unit="年" />}
+            {monthlyMortgage > 0 && <Slider label="残年数" value={mortgageYears} onChange={setMortgageYears} min={0} max={50} unit="年" />}
           </Section>
 
           <Section title="🎓 子ども・教育費" open={openSections.children} onToggle={() => toggleSection("children")}>
@@ -553,7 +642,7 @@ export default function App() {
         {/* ===== OUTPUT PANEL ===== */}
         <div>
           {/* FIRE Progress Hero */}
-          <FireProgressRing ratio={year0.fireRatio} fireYear={fireYear} currentAge={currentAge} />
+          <FireProgressRing ratio={year0.fireRatio} fireYear={fireYear} currentAge={currentAge} fireIncome={year0.fireIncome} fireExpenses={year0.fireExpenses} />
 
           {/* Summary Cards */}
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
