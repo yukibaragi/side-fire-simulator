@@ -75,17 +75,28 @@ function getEducationCost(childAge, settings) {
   return 0;
 }
 
+function getHoursForAge(age, baseHours, workSteps) {
+  let hours = baseHours;
+  for (const s of workSteps) {
+    if (age >= s.age) hours = s.hours;
+  }
+  return hours;
+}
+
 function simulate(params) {
   const years = [];
   let investmentAssets = params.investmentAssets * 10000;
   let cashAssets = params.cashAssets * 10000;
   let fireYear = null;
+  const inflationRate = (params.inflationRate || 0) / 100;
 
   for (let y = 0; y <= params.simYears; y++) {
     const age = params.currentAge + y;
     const year = new Date().getFullYear() + y;
+    const inflationFactor = Math.pow(1 + inflationRate, y);
 
-    const mainRevenue = params.hourlyRate * params.monthlyHours * 12;
+    const effectiveHours = getHoursForAge(age, params.monthlyHours, params.workSteps || []);
+    const mainRevenue = params.hourlyRate * effectiveHours * 12;
     const sideRevenue = params.sideIncome * 10000;
     const totalRevenue = mainRevenue + sideRevenue;
     const mainExpenses = mainRevenue * (params.mainExpenseRate / 100);
@@ -110,13 +121,13 @@ function simulate(params) {
 
     const netIncome = totalRevenue - mainExpenses - sideExpenses - totalTax - socialInsurance;
     const spouseNet = params.hasSpouse ? params.spouseIncome * 10000 : 0;
-    const livingExpenses = params.monthlyLiving * 10000 * 12;
+    const livingExpenses = Math.round(params.monthlyLiving * 10000 * 12 * inflationFactor);
     const mortgageRemaining = params.mortgageYears - y;
     const mortgageAnnual = mortgageRemaining > 0 ? params.monthlyMortgage * 10000 * 12 : 0;
 
     let educationTotal = 0;
     for (const child of params.children) {
-      educationTotal += getEducationCost(child.age + y, child.edu);
+      educationTotal += Math.round(getEducationCost(child.age + y, child.edu) * inflationFactor);
     }
 
     const totalExpenses = livingExpenses + mortgageAnnual + educationTotal;
@@ -140,19 +151,17 @@ function simulate(params) {
       }
     }
 
-    // FIRE metrics
     const fireIncome = investmentAssets * 0.04 + sideRevenue + spouseNet;
     const fireExpenses = totalExpenses + mutualAid + ideco;
     const fireRatio = fireExpenses > 0 ? fireIncome / fireExpenses : 0;
     const isFire = fireIncome >= fireExpenses;
     if (isFire && !fireYear) fireYear = { age, year };
 
-    // Required investment assets for FIRE (what's needed so 4% covers the gap)
     const gapForFire = Math.max(0, fireExpenses - sideRevenue - spouseNet);
     const requiredAssets = gapForFire / 0.04;
 
     years.push({
-      year, age,
+      year, age, effectiveHours,
       mainRevenue: Math.round(mainRevenue),
       sideRevenue: Math.round(sideRevenue),
       totalRevenue: Math.round(totalRevenue),
@@ -188,7 +197,6 @@ const fmt = (n) => {
 };
 const fmtMan = (n) => Math.round(n / 10000).toLocaleString() + "万円";
 
-// --- FIRE Progress Ring ---
 function FireProgressRing({ ratio, fireYear, currentAge, fireIncome, fireExpenses }) {
   const pct = Math.min(ratio * 100, 100);
   const achieved = pct >= 100;
@@ -205,7 +213,6 @@ function FireProgressRing({ ratio, fireYear, currentAge, fireIncome, fireExpense
       borderRadius: 16, padding: "24px 28px", marginBottom: 20, position: "relative", overflow: "hidden",
       boxShadow: achieved ? "0 0 40px rgba(45, 122, 95, 0.3), 0 4px 12px rgba(0,0,0,0.2)" : "0 4px 12px rgba(0,0,0,0.15)",
     }}>
-      {/* Glow effect when achieved */}
       {achieved && (
         <div style={{
           position: "absolute", top: -40, right: -40, width: 200, height: 200,
@@ -215,7 +222,6 @@ function FireProgressRing({ ratio, fireYear, currentAge, fireIncome, fireExpense
       )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
-        {/* Ring */}
         <div style={{ position: "relative", width: 130, height: 130, flexShrink: 0 }}>
           <svg width="130" height="130" viewBox="0 0 130 130">
             <circle cx="65" cy="65" r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="10" />
@@ -241,7 +247,6 @@ function FireProgressRing({ ratio, fireYear, currentAge, fireIncome, fireExpense
           </div>
         </div>
 
-        {/* Info */}
         <div style={{ flex: 1, minWidth: 180 }}>
           {achieved ? (
             <>
@@ -278,7 +283,6 @@ function FireProgressRing({ ratio, fireYear, currentAge, fireIncome, fireExpense
             </>
           )}
 
-          {/* Mini metrics */}
           <div style={{ display: "flex", gap: 16, marginTop: 12 }}>
             <div>
               <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)" }}>FIRE収入</div>
@@ -299,7 +303,6 @@ function FireProgressRing({ ratio, fireYear, currentAge, fireIncome, fireExpense
   );
 }
 
-// --- Sections, Sliders, etc ---
 function Section({ title, open, onToggle, children }) {
   return (
     <div style={{ borderBottom: "1px solid #e2e5e9", paddingBottom: open ? 16 : 0, marginBottom: 12 }}>
@@ -404,6 +407,34 @@ function ChildConfig({ index, child, onChange, onRemove }) {
   );
 }
 
+function WorkStepConfig({ steps, onChange, currentAge, simYears }) {
+  const addStep = () => {
+    onChange([...steps, { age: currentAge + 5, hours: 60 }]);
+  };
+  const removeStep = (i) => onChange(steps.filter((_, idx) => idx !== i));
+  const updateStep = (i, key, val) => onChange(steps.map((s, idx) => idx === i ? { ...s, [key]: val } : s));
+
+  return (
+    <div>
+      {steps.map((s, i) => (
+        <div key={i} style={{ background: "#f4f6f8", borderRadius: 8, padding: 12, marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#4a5060" }}>ステップ {i + 1}</span>
+            <button onClick={() => removeStep(i)} style={{ fontSize: 11, color: "#c44b3f", background: "none", border: "none", cursor: "pointer" }}>削除</button>
+          </div>
+          <Slider label="変更する年齢" value={s.age} onChange={v => updateStep(i, "age", v)} min={currentAge} max={currentAge + simYears} unit="歳" />
+          <Slider label="月稼働時間" value={s.hours} onChange={v => updateStep(i, "hours", v)} min={0} max={200} step={5} unit="時間" />
+        </div>
+      ))}
+      {steps.length < 3 && (
+        <button onClick={addStep} style={{ fontSize: 12, color: "#2d7a5f", background: "none", border: "1px dashed #2d7a5f", borderRadius: 6, padding: "6px 12px", cursor: "pointer", width: "100%" }}>
+          + 稼働時間の変更を追加
+        </button>
+      )}
+    </div>
+  );
+}
+
 function SummaryCard({ label, value, sub, color }) {
   return (
     <div style={{
@@ -423,7 +454,7 @@ function CustomTooltip({ active, payload }) {
   if (!d) return null;
   return (
     <div style={{ fontSize: 12, background: "#fff", border: "1px solid #e2e5e9", borderRadius: 8, padding: "10px 14px", boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
-      <div style={{ fontWeight: 700, marginBottom: 6, fontSize: 13 }}>{d.age}歳（{d.year}年）</div>
+      <div style={{ fontWeight: 700, marginBottom: 6, fontSize: 13 }}>{d.age}歳（{d.year}年）{d.effectiveHours != null && <span style={{ color: "#888", fontWeight: 400 }}> 月{d.effectiveHours}h</span>}</div>
       <div style={{ display: "grid", gap: 3 }}>
         <div><span style={{ color: "#888" }}>投資資産:</span> <span style={{ color: "#2d7a5f", fontWeight: 600 }}>{fmtMan(d.investmentAssets)}</span></div>
         <div><span style={{ color: "#888" }}>現金:</span> <span style={{ color: "#3b6fa0", fontWeight: 600 }}>{fmtMan(d.cashAssets)}</span></div>
@@ -451,6 +482,7 @@ const DEFAULTS = {
   monthlyLiving: 20, monthlyMortgage: 9, mortgageYears: 34, investmentAssets: 3300,
   cashAssets: 500, returnRate: 5, nisaAnnual: 120, blueReturn: "65", mutualAid: 3,
   ideco: 6.8, isConsumptionTaxPayer: true, consumptionTaxCategory: "service",
+  inflationRate: 0, workSteps: [],
 };
 
 function parseURL() {
@@ -495,19 +527,24 @@ export default function App() {
   const [ideco, setIdeco] = useState(d.ideco);
   const [isConsumptionTaxPayer, setIsConsumptionTaxPayer] = useState(d.isConsumptionTaxPayer);
   const [consumptionTaxCategory, setConsumptionTaxCategory] = useState(d.consumptionTaxCategory);
+  const [inflationRate, setInflationRate] = useState(d.inflationRate);
+  const [workSteps, setWorkSteps] = useState(d.workSteps);
   const [openSections, setOpenSections] = useState({ basic: true, main: true, side: true, living: false, children: false, assets: false, tax: false });
   const [showTable, setShowTable] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [mobileShowInput, setMobileShowInput] = useState(false);
 
   const allState = useMemo(() => ({
     currentAge, simYears, hasSpouse, hourlyRate, monthlyHours, mainExpenseRate,
     sideIncome, sideExpenseRate, spouseIncome, monthlyLiving, monthlyMortgage,
     mortgageYears, children, investmentAssets, cashAssets, returnRate, nisaAnnual,
     blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory,
+    inflationRate, workSteps,
   }), [currentAge, simYears, hasSpouse, hourlyRate, monthlyHours, mainExpenseRate,
     sideIncome, sideExpenseRate, spouseIncome, monthlyLiving, monthlyMortgage,
     mortgageYears, children, investmentAssets, cashAssets, returnRate, nisaAnnual,
-    blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory]);
+    blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory,
+    inflationRate, workSteps]);
 
   useEffect(() => { syncURL(allState); }, [allState]);
 
@@ -529,14 +566,97 @@ export default function App() {
     monthlyLiving, monthlyMortgage, mortgageYears, children,
     investmentAssets, cashAssets, returnRate, nisaAnnual,
     blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory,
+    inflationRate, workSteps,
   }), [currentAge, simYears, hasSpouse, hourlyRate, monthlyHours, mainExpenseRate,
     sideIncome, sideExpenseRate, spouseIncome, monthlyLiving, monthlyMortgage,
     mortgageYears, children, investmentAssets, cashAssets, returnRate, nisaAnnual,
-    blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory]);
+    blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory,
+    inflationRate, workSteps]);
 
   const result = useMemo(() => simulate(params), [params]);
   const year0 = result.years[0];
   const fireYear = result.fireYear;
+
+  const inputPanel = (
+    <div style={{ background: "#fff", borderRadius: 12, padding: 20, boxShadow: "0 1px 4px rgba(0,0,0,0.06)" }}>
+      <Section title="👤 基本情報" open={openSections.basic} onToggle={() => toggleSection("basic")}>
+        <Slider label="現在の年齢" value={currentAge} onChange={setCurrentAge} min={20} max={60} unit="歳" />
+        <Slider label="シミュレーション期間" value={simYears} onChange={setSimYears} min={5} max={40}
+          formatter={v => `${v}年（${currentAge + v}歳まで）`} />
+        <Toggle label="配偶者あり" value={hasSpouse} onChange={setHasSpouse} />
+        {hasSpouse && <Slider label="配偶者 年間手取り" value={spouseIncome} onChange={setSpouseIncome} min={0} max={800} step={10} unit="万円" />}
+      </Section>
+
+      <Section title="💼 本業収入（フリーランス）" open={openSections.main} onToggle={() => toggleSection("main")}>
+        <Slider label="時給単価" value={hourlyRate} onChange={setHourlyRate} min={2000} max={15000} step={100}
+          formatter={v => `${v.toLocaleString()}円/h`} />
+        <Slider label="月稼働時間" value={monthlyHours} onChange={setMonthlyHours} min={20} max={200} step={5} unit="時間" />
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8, padding: "4px 8px", background: "#f9fafb", borderRadius: 4 }}>
+          → 月収 {Math.round(hourlyRate * monthlyHours / 10000).toLocaleString()}万円 ／ 年収 {Math.round(hourlyRate * monthlyHours * 12 / 10000).toLocaleString()}万円（税引前）
+        </div>
+        <Slider label="経費率" value={mainExpenseRate} onChange={setMainExpenseRate} min={0} max={50} unit="%" />
+        <div style={{ borderTop: "1px solid #eee", paddingTop: 10, marginTop: 4 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#4a5060", marginBottom: 8 }}>年齢別の稼働時間変更</div>
+          <WorkStepConfig steps={workSteps} onChange={setWorkSteps} currentAge={currentAge} simYears={simYears} />
+        </div>
+      </Section>
+
+      <Section title="✍️ 副業・創作収入" open={openSections.side} onToggle={() => toggleSection("side")}>
+        <Slider label="年間収入" value={sideIncome} onChange={setSideIncome} min={0} max={1000} step={10} unit="万円" />
+        <Slider label="経費率" value={sideExpenseRate} onChange={setSideExpenseRate} min={0} max={50} unit="%" />
+      </Section>
+
+      <Section title="🏠 生活費・住宅" open={openSections.living} onToggle={() => toggleSection("living")}>
+        <Slider label="月額生活費（住宅ローン除く）" value={monthlyLiving} onChange={setMonthlyLiving} min={5} max={50} unit="万円" />
+        <Slider label="住宅ローン月額" value={monthlyMortgage} onChange={setMonthlyMortgage} min={0} max={25} step={0.5}
+          formatter={v => v === 0 ? "なし" : `${v}万円`} />
+        {monthlyMortgage > 0 && <Slider label="残年数" value={mortgageYears} onChange={setMortgageYears} min={0} max={50} unit="年" />}
+        <Slider label="インフレ率（年率）" value={inflationRate} onChange={setInflationRate} min={0} max={5} step={0.5} unit="%"
+          formatter={v => v === 0 ? "考慮しない" : `${v}%/年`} />
+        {inflationRate > 0 && (
+          <div style={{ fontSize: 11, color: "#8a919c", padding: "4px 8px", background: "#f9fafb", borderRadius: 4, marginBottom: 8 }}>
+            ※ 生活費・教育費に年率{inflationRate}%のインフレを適用（{simYears}年後: ×{Math.pow(1 + inflationRate / 100, simYears).toFixed(2)}）
+          </div>
+        )}
+      </Section>
+
+      <Section title="🎓 子ども・教育費" open={openSections.children} onToggle={() => toggleSection("children")}>
+        {children.map((child, i) => (
+          <ChildConfig key={i} index={i} child={child} onChange={c => updateChild(i, c)} onRemove={() => removeChild(i)} />
+        ))}
+        {children.length < 3 && (
+          <button onClick={addChild} style={{ fontSize: 12, color: "#2d7a5f", background: "none", border: "1px dashed #2d7a5f", borderRadius: 6, padding: "6px 12px", cursor: "pointer", width: "100%" }}>
+            + 子どもを追加
+          </button>
+        )}
+      </Section>
+
+      <Section title="📈 資産・投資" open={openSections.assets} onToggle={() => toggleSection("assets")}>
+        <Slider label="投資資産" value={investmentAssets} onChange={setInvestmentAssets} min={0} max={10000} step={50} unit="万円" />
+        <Slider label="現金・預金" value={cashAssets} onChange={setCashAssets} min={0} max={5000} step={50} unit="万円" />
+        <Slider label="期待リターン率" value={returnRate} onChange={setReturnRate} min={0} max={10} step={0.5} unit="%" />
+        <Slider label="年間NISA投資枠" value={nisaAnnual} onChange={setNisaAnnual} min={0} max={360} step={10} unit="万円" />
+      </Section>
+
+      <Section title="🧾 節税・社会保険" open={openSections.tax} onToggle={() => toggleSection("tax")}>
+        <Select label="青色申告控除" value={blueReturn} onChange={setBlueReturn}
+          options={[{ value: "65", label: "65万円" }, { value: "10", label: "10万円" }, { value: "0", label: "なし" }]} />
+        <Slider label="小規模企業共済" value={mutualAid} onChange={setMutualAid} min={0} max={7} step={0.5}
+          formatter={v => v === 0 ? "なし" : `月${v}万円`} />
+        <Slider label="iDeCo" value={ideco} onChange={setIdeco} min={0} max={6.8} step={0.1}
+          formatter={v => v === 0 ? "なし" : `月${v}万円`} />
+        <Toggle label="消費税課税事業者" value={isConsumptionTaxPayer} onChange={setIsConsumptionTaxPayer} />
+        {isConsumptionTaxPayer && (
+          <Select label="簡易課税みなし仕入率" value={consumptionTaxCategory} onChange={setConsumptionTaxCategory}
+            options={[
+              { value: "service", label: "サービス業（50%）" }, { value: "other", label: "その他事業（60%）" },
+              { value: "manufacturing", label: "製造業等（70%）" }, { value: "retail", label: "小売業（80%）" },
+              { value: "wholesale", label: "卸売業（90%）" },
+            ]} />
+        )}
+      </Section>
+    </div>
+  );
 
   return (
     <div style={{
@@ -544,7 +664,7 @@ export default function App() {
       fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif',
     }}>
       <header style={{ padding: "28px 0 20px", borderBottom: "2px solid #1a2332", marginBottom: 24 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
           <div>
             <div style={{ fontSize: 11, letterSpacing: "0.2em", color: "#8a919c", fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>Side FIRE Simulator</div>
             <h1 style={{ fontSize: 24, fontWeight: 700, color: "#1a2332", margin: 0 }}>サイドFIRE・フリーランス転向シミュレーター</h1>
@@ -561,7 +681,17 @@ export default function App() {
       </header>
 
       <style>{`
-        @media (max-width: 800px) { .sim-grid { grid-template-columns: 1fr !important; } }
+        @media (min-width: 801px) {
+          .mobile-input-toggle { display: none !important; }
+          .input-panel { display: block !important; }
+        }
+        @media (max-width: 800px) {
+          .sim-grid { grid-template-columns: 1fr !important; }
+          .input-panel { display: none; }
+          .input-panel.mobile-open { display: block; }
+          .summary-cards { flex-direction: column; }
+          .summary-cards > div { min-width: unset !important; }
+        }
         .sim-grid input[type=range] { height: 6px; }
         .data-table { font-size: 11px; }
         .data-table th, .data-table td { padding: 6px 8px; white-space: nowrap; }
@@ -569,83 +699,26 @@ export default function App() {
         .data-table tr.fire-row td:first-child { box-shadow: inset 3px 0 0 #16a34a; }
       `}</style>
 
+      {/* Mobile toggle */}
+      <button className="mobile-input-toggle" onClick={() => setMobileShowInput(!mobileShowInput)} style={{
+        display: "none", width: "100%", fontSize: 14, fontWeight: 600, color: "#2d7a5f",
+        background: "#fff", border: "1px solid #2d7a5f", borderRadius: 8,
+        padding: "10px 16px", cursor: "pointer", marginBottom: 16,
+      }}>
+        {mobileShowInput ? "▲ 入力パネルを閉じる" : "▼ 入力パネルを開く"}
+      </button>
+
       <div className="sim-grid" style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 24, alignItems: "start" }}>
         {/* ===== INPUT PANEL ===== */}
-        <div style={{ background: "#fff", borderRadius: 12, padding: 20, boxShadow: "0 1px 4px rgba(0,0,0,0.06)" }}>
-          <Section title="👤 基本情報" open={openSections.basic} onToggle={() => toggleSection("basic")}>
-            <Slider label="現在の年齢" value={currentAge} onChange={setCurrentAge} min={20} max={60} unit="歳" />
-            <Slider label="シミュレーション期間" value={simYears} onChange={setSimYears} min={5} max={40}
-              formatter={v => `${v}年（${currentAge + v}歳まで）`} />
-            <Toggle label="配偶者あり" value={hasSpouse} onChange={setHasSpouse} />
-            {hasSpouse && <Slider label="配偶者 年間手取り" value={spouseIncome} onChange={setSpouseIncome} min={0} max={800} step={10} unit="万円" />}
-          </Section>
-
-          <Section title="💼 本業収入（フリーランス）" open={openSections.main} onToggle={() => toggleSection("main")}>
-            <Slider label="時給単価" value={hourlyRate} onChange={setHourlyRate} min={2000} max={15000} step={100}
-              formatter={v => `${v.toLocaleString()}円/h`} />
-            <Slider label="月稼働時間" value={monthlyHours} onChange={setMonthlyHours} min={20} max={200} step={5} unit="時間" />
-            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8, padding: "4px 8px", background: "#f9fafb", borderRadius: 4 }}>
-              → 月収 {Math.round(hourlyRate * monthlyHours / 10000).toLocaleString()}万円 ／ 年収 {Math.round(hourlyRate * monthlyHours * 12 / 10000).toLocaleString()}万円（税引前）
-            </div>
-            <Slider label="経費率" value={mainExpenseRate} onChange={setMainExpenseRate} min={0} max={50} unit="%" />
-          </Section>
-
-          <Section title="✍️ 副業・創作収入" open={openSections.side} onToggle={() => toggleSection("side")}>
-            <Slider label="年間収入" value={sideIncome} onChange={setSideIncome} min={0} max={1000} step={10} unit="万円" />
-            <Slider label="経費率" value={sideExpenseRate} onChange={setSideExpenseRate} min={0} max={50} unit="%" />
-          </Section>
-
-          <Section title="🏠 生活費・住宅" open={openSections.living} onToggle={() => toggleSection("living")}>
-            <Slider label="月額生活費（住宅ローン除く）" value={monthlyLiving} onChange={setMonthlyLiving} min={5} max={50} unit="万円" />
-            <Slider label="住宅ローン月額" value={monthlyMortgage} onChange={setMonthlyMortgage} min={0} max={25} step={0.5}
-              formatter={v => v === 0 ? "なし" : `${v}万円`} />
-            {monthlyMortgage > 0 && <Slider label="残年数" value={mortgageYears} onChange={setMortgageYears} min={0} max={50} unit="年" />}
-          </Section>
-
-          <Section title="🎓 子ども・教育費" open={openSections.children} onToggle={() => toggleSection("children")}>
-            {children.map((child, i) => (
-              <ChildConfig key={i} index={i} child={child} onChange={c => updateChild(i, c)} onRemove={() => removeChild(i)} />
-            ))}
-            {children.length < 3 && (
-              <button onClick={addChild} style={{ fontSize: 12, color: "#2d7a5f", background: "none", border: "1px dashed #2d7a5f", borderRadius: 6, padding: "6px 12px", cursor: "pointer", width: "100%" }}>
-                + 子どもを追加
-              </button>
-            )}
-          </Section>
-
-          <Section title="📈 資産・投資" open={openSections.assets} onToggle={() => toggleSection("assets")}>
-            <Slider label="投資資産" value={investmentAssets} onChange={setInvestmentAssets} min={0} max={10000} step={50} unit="万円" />
-            <Slider label="現金・預金" value={cashAssets} onChange={setCashAssets} min={0} max={5000} step={50} unit="万円" />
-            <Slider label="期待リターン率" value={returnRate} onChange={setReturnRate} min={0} max={10} step={0.5} unit="%" />
-            <Slider label="年間NISA投資枠" value={nisaAnnual} onChange={setNisaAnnual} min={0} max={360} step={10} unit="万円" />
-          </Section>
-
-          <Section title="🧾 節税・社会保険" open={openSections.tax} onToggle={() => toggleSection("tax")}>
-            <Select label="青色申告控除" value={blueReturn} onChange={setBlueReturn}
-              options={[{ value: "65", label: "65万円" }, { value: "10", label: "10万円" }, { value: "0", label: "なし" }]} />
-            <Slider label="小規模企業共済" value={mutualAid} onChange={setMutualAid} min={0} max={7} step={0.5}
-              formatter={v => v === 0 ? "なし" : `月${v}万円`} />
-            <Slider label="iDeCo" value={ideco} onChange={setIdeco} min={0} max={6.8} step={0.1}
-              formatter={v => v === 0 ? "なし" : `月${v}万円`} />
-            <Toggle label="消費税課税事業者" value={isConsumptionTaxPayer} onChange={setIsConsumptionTaxPayer} />
-            {isConsumptionTaxPayer && (
-              <Select label="簡易課税みなし仕入率" value={consumptionTaxCategory} onChange={setConsumptionTaxCategory}
-                options={[
-                  { value: "service", label: "サービス業（50%）" }, { value: "other", label: "その他事業（60%）" },
-                  { value: "manufacturing", label: "製造業等（70%）" }, { value: "retail", label: "小売業（80%）" },
-                  { value: "wholesale", label: "卸売業（90%）" },
-                ]} />
-            )}
-          </Section>
+        <div className={`input-panel ${mobileShowInput ? "mobile-open" : ""}`}>
+          {inputPanel}
         </div>
 
         {/* ===== OUTPUT PANEL ===== */}
         <div>
-          {/* FIRE Progress Hero */}
           <FireProgressRing ratio={year0.fireRatio} fireYear={fireYear} currentAge={currentAge} fireIncome={year0.fireIncome} fireExpenses={year0.fireExpenses} />
 
-          {/* Summary Cards */}
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+          <div className="summary-cards" style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
             <SummaryCard label="年間手取り（初年度）" value={fmtMan(year0.netIncome)} sub={`税・社保: ${fmtMan(year0.totalTax + year0.socialInsurance)}`} />
             <SummaryCard label="世帯手取り" value={fmtMan(year0.netIncome + year0.spouseNet)} sub={`年間支出: ${fmtMan(year0.totalExpenses)}`} />
             <SummaryCard label="年間収支" value={(year0.surplus >= 0 ? "+" : "") + fmtMan(year0.surplus)}
@@ -653,13 +726,12 @@ export default function App() {
               sub={`FIRE収入: ${fmtMan(year0.fireIncome)} / 必要: ${fmtMan(year0.fireExpenses)}`} />
           </div>
 
-          {/* Tax breakdown */}
           <div style={{
             background: "#fff", borderRadius: 10, padding: 16, marginBottom: 20,
             boxShadow: "0 1px 4px rgba(0,0,0,0.06)", fontSize: 12, color: "#4a5060",
           }}>
             <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "#1a2332" }}>初年度 税・社保の内訳</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "4px 16px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "4px 16px" }}>
               <div>所得税: {fmtMan(year0.incomeTax)}</div>
               <div>住民税: {fmtMan(year0.residentTax)}</div>
               <div>復興特別税: {fmtMan(year0.reconstructionTax)}</div>
@@ -670,7 +742,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Chart: Assets vs FIRE threshold */}
           <div style={{
             background: "#fff", borderRadius: 10, padding: "16px 8px 8px 0",
             boxShadow: "0 1px 4px rgba(0,0,0,0.06)", marginBottom: 20,
@@ -704,7 +775,6 @@ export default function App() {
             </ResponsiveContainer>
           </div>
 
-          {/* Table toggle */}
           <button onClick={() => setShowTable(!showTable)} style={{
             fontSize: 13, color: "#2d7a5f", background: "#fff", border: "1px solid #d0d4da",
             borderRadius: 8, padding: "8px 16px", cursor: "pointer", marginBottom: 12,
@@ -758,7 +828,7 @@ export default function App() {
             </div>
           )}
 
-          <div style={{ fontSize: 11, color: "#aaa", marginTop: 20, lineHeight: 1.6 }}>
+          <div style={{ fontSize: 11, color: "#aaa", marginTop: 20, lineHeight: 1.6, paddingBottom: 40 }}>
             ※ 本シミュレーターは概算です。実際の税額・保険料は自治体・控除状況により異なります。
             国民健康保険料は代表的な料率による概算値です。投資リターンは確定ではありません。
             サイドFIRE達成 = 投資資産の4%取り崩し＋副業収入＋配偶者収入 ≥ 年間総支出。
