@@ -2,7 +2,7 @@
 
 フリーランスエンジニア＋副業（ライター等）の二本柱で生活する人向けの資産シミュレーター。
 
-**[デモを見る →](https://ibaragiyuuki.github.io/side-fire-simulator/)**
+**[デモを見る →](https://winter-lab-cloud.github.io/side-fire-simulator/)**
 
 ## 特徴
 
