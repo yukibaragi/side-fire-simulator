@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { ComposedChart, AreaChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 // ============================================================
@@ -32,6 +32,7 @@ const RESIDENT_TAX_RATE = 0.10;
 const RESIDENT_TAX_PERCAPITA = 5000;
 const RECONSTRUCTION_TAX_RATE = 0.021;
 const BASIC_DEDUCTION = 580000;
+const NISA_LIFETIME_CAP = 18000000;
 const CONSUMPTION_TAX_SIMPLIFIED_RATES = {
   service: 0.50, wholesale: 0.90, retail: 0.80,
   manufacturing: 0.70, realestate: 0.60, other: 0.60,
@@ -89,6 +90,7 @@ function simulate(params) {
   let cashAssets = params.cashAssets * 10000;
   let fireYear = null;
   const inflationRate = (params.inflationRate || 0) / 100;
+  let nisaCumulative = (params.nisaUsed || 0) * 10000;
 
   for (let y = 0; y <= params.simYears; y++) {
     const age = params.currentAge + y;
@@ -134,10 +136,13 @@ function simulate(params) {
     const surplus = netIncome + spouseNet - totalExpenses - mutualAid - ideco;
 
     const investmentReturn = Math.floor(investmentAssets * (params.returnRate / 100));
-    const nisaMax = params.nisaAnnual * 10000;
+    const nisaAnnualMax = params.nisaAnnual * 10000;
+    const nisaLifetimeRemaining = Math.max(0, NISA_LIFETIME_CAP - nisaCumulative);
+    const nisaMax = Math.min(nisaAnnualMax, nisaLifetimeRemaining);
 
     if (surplus >= 0) {
       const toInvest = Math.min(surplus, nisaMax);
+      nisaCumulative += toInvest;
       investmentAssets += toInvest + investmentReturn;
       cashAssets += surplus - toInvest;
     } else {
@@ -179,12 +184,195 @@ function simulate(params) {
       cashAssets: Math.round(cashAssets),
       totalAssets: Math.round(investmentAssets + cashAssets),
       investmentReturn: Math.round(investmentReturn),
+      nisaCumulative: Math.round(nisaCumulative),
       isFire, fireRatio, fireIncome: Math.round(fireIncome),
       fireExpenses: Math.round(fireExpenses),
       requiredAssets: Math.round(requiredAssets),
     });
   }
   return { years, fireYear };
+}
+
+// ============================================================
+// URL encoding (compact)
+// ============================================================
+const STATE_KEYS = [
+  ["a", "currentAge"], ["b", "simYears"], ["c", "hasSpouse"], ["d", "hourlyRate"],
+  ["e", "monthlyHours"], ["f", "mainExpenseRate"], ["g", "sideIncome"], ["h", "sideExpenseRate"],
+  ["i", "spouseIncome"], ["j", "monthlyLiving"], ["k", "monthlyMortgage"], ["l", "mortgageYears"],
+  ["m", "children"], ["n", "investmentAssets"], ["o", "cashAssets"], ["p", "returnRate"],
+  ["q", "nisaAnnual"], ["r", "blueReturn"], ["s", "mutualAid"], ["t", "ideco"],
+  ["u", "isConsumptionTaxPayer"], ["v", "consumptionTaxCategory"], ["w", "inflationRate"],
+  ["x", "workSteps"], ["y", "nisaUsed"],
+];
+
+const DEFAULTS = {
+  currentAge: 37, simYears: 28, hasSpouse: true, hourlyRate: 4500, monthlyHours: 80,
+  mainExpenseRate: 10, sideIncome: 200, sideExpenseRate: 15, spouseIncome: 190,
+  monthlyLiving: 20, monthlyMortgage: 9, mortgageYears: 34, investmentAssets: 3300,
+  cashAssets: 500, returnRate: 5, nisaAnnual: 120, blueReturn: "65", mutualAid: 3,
+  ideco: 6.8, isConsumptionTaxPayer: true, consumptionTaxCategory: "service",
+  inflationRate: 0, workSteps: [], nisaUsed: 0,
+};
+
+function encodeState(state) {
+  const diff = {};
+  for (const [short, full] of STATE_KEYS) {
+    const val = state[full];
+    const def = DEFAULTS[full];
+    if (JSON.stringify(val) !== JSON.stringify(def)) {
+      diff[short] = val;
+    }
+  }
+  if (Object.keys(diff).length === 0) return "";
+  return btoa(JSON.stringify(diff));
+}
+
+function decodeState(encoded) {
+  try {
+    const diff = JSON.parse(atob(encoded));
+    const result = {};
+    for (const [short, full] of STATE_KEYS) {
+      if (short in diff) result[full] = diff[short];
+    }
+    return result;
+  } catch { return null; }
+}
+
+function parseURL() {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    const s = p.get("s");
+    if (!s) return null;
+    if (s.length > 200) {
+      // Legacy format (old long URLs)
+      try { return JSON.parse(decodeURIComponent(atob(s))); } catch {}
+    }
+    return decodeState(s);
+  } catch { return null; }
+}
+
+function syncURL(state) {
+  const encoded = encodeState(state);
+  const url = new URL(window.location);
+  if (encoded) {
+    url.searchParams.set("s", encoded);
+  } else {
+    url.searchParams.delete("s");
+  }
+  window.history.replaceState(null, "", url);
+}
+
+// ============================================================
+// Share image generation
+// ============================================================
+function generateShareImage(result, fireYear, currentAge) {
+  const W = 1200, H = 630;
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+
+  // Background
+  const grad = ctx.createLinearGradient(0, 0, W, H);
+  grad.addColorStop(0, "#1a2332");
+  grad.addColorStop(1, "#1e293b");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  const year0 = result.years[0];
+  const lastYear = result.years[result.years.length - 1];
+  const pct = Math.min(Math.round(year0.fireRatio * 100), 100);
+  const achieved = pct >= 100;
+
+  // Progress ring
+  const cx = 150, cy = 200, r = 80;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  ctx.lineWidth = 14;
+  ctx.stroke();
+
+  ctx.beginPath();
+  const startAngle = -Math.PI / 2;
+  const endAngle = startAngle + (Math.PI * 2 * Math.min(pct, 100) / 100);
+  ctx.arc(cx, cy, r, startAngle, endAngle);
+  ctx.strokeStyle = achieved ? "#4ade80" : pct > 70 ? "#fbbf24" : "#60a5fa";
+  ctx.lineWidth = 14;
+  ctx.lineCap = "round";
+  ctx.stroke();
+
+  // Ring text
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 42px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(`${pct}%`, cx, cy + 8);
+  ctx.fillStyle = "rgba(255,255,255,0.5)";
+  ctx.font = "12px system-ui, sans-serif";
+  ctx.fillText("FIRE達成率", cx, cy + 32);
+
+  // Title
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 36px system-ui, 'Hiragino Kaku Gothic ProN', sans-serif";
+  ctx.fillText("サイドFIRE シミュレーション結果", 290, 120);
+
+  // FIRE status
+  ctx.font = "bold 28px system-ui, sans-serif";
+  if (fireYear) {
+    const yearsLeft = fireYear.age - currentAge;
+    if (yearsLeft <= 0) {
+      ctx.fillStyle = "#4ade80";
+      ctx.fillText("✦ サイドFIRE 達成済み!", 290, 180);
+    } else {
+      ctx.fillStyle = "#fbbf24";
+      ctx.fillText(`${yearsLeft}年後（${fireYear.age}歳）に達成`, 290, 180);
+    }
+  } else {
+    ctx.fillStyle = "#f87171";
+    ctx.fillText("シミュレーション期間内に未達成", 290, 180);
+  }
+
+  // Metrics
+  const fmtM = (n) => Math.round(n / 10000).toLocaleString() + "万円";
+  const metrics = [
+    ["年間手取り", fmtM(year0.netIncome), "#fff"],
+    ["年間収支", (year0.surplus >= 0 ? "+" : "") + fmtM(year0.surplus), year0.surplus >= 0 ? "#4ade80" : "#f87171"],
+    ["総資産（初年度）", fmtM(year0.totalAssets), "#fff"],
+    ["総資産（最終年）", fmtM(lastYear.totalAssets), "#fff"],
+    ["FIRE収入", fmtM(year0.fireIncome), "#4ade80"],
+    ["年間支出", fmtM(year0.fireExpenses), "#f87171"],
+  ];
+
+  const colW = 350;
+  metrics.forEach((m, i) => {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const x = 290 + col * colW;
+    const y = 240 + row * 80;
+    ctx.fillStyle = "rgba(255,255,255,0.4)";
+    ctx.font = "14px system-ui, sans-serif";
+    ctx.fillText(m[0], x, y);
+    ctx.fillStyle = m[2];
+    ctx.font = "bold 28px system-ui, sans-serif";
+    ctx.fillText(m[1], x, y + 34);
+  });
+
+  // Bottom bar
+  ctx.fillStyle = "rgba(0,0,0,0.3)";
+  ctx.fillRect(0, H - 50, W, 50);
+  ctx.fillStyle = "rgba(255,255,255,0.4)";
+  ctx.font = "14px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("Side FIRE Simulator  |  winter-lab-cloud.github.io/side-fire-simulator", W / 2, H - 20);
+
+  // Subtitle
+  ctx.textAlign = "left";
+  ctx.fillStyle = "rgba(255,255,255,0.3)";
+  ctx.font = "13px system-ui, sans-serif";
+  ctx.fillText(`${currentAge}歳 / 時給${year0.mainRevenue > 0 ? Math.round(year0.mainRevenue / (year0.effectiveHours * 12)).toLocaleString() : "—"}円 / ${year0.effectiveHours}h・月`, 290, 215);
+
+  return canvas;
 }
 
 // ============================================================
@@ -459,6 +647,7 @@ function CustomTooltip({ active, payload }) {
         <div><span style={{ color: "#888" }}>投資資産:</span> <span style={{ color: "#2d7a5f", fontWeight: 600 }}>{fmtMan(d.investmentAssets)}</span></div>
         <div><span style={{ color: "#888" }}>現金:</span> <span style={{ color: "#3b6fa0", fontWeight: 600 }}>{fmtMan(d.cashAssets)}</span></div>
         <div><span style={{ color: "#888" }}>FIRE必要額:</span> <span style={{ color: "#e88c30", fontWeight: 500 }}>{fmtMan(d.requiredAssets)}</span></div>
+        <div><span style={{ color: "#888" }}>NISA累計:</span> <span style={{ fontWeight: 500 }}>{fmtMan(d.nisaCumulative)}</span></div>
         <div style={{ borderTop: "1px solid #eee", paddingTop: 4, marginTop: 2, fontWeight: 700 }}>
           合計: {fmtMan(d.totalAssets)}
         </div>
@@ -475,31 +664,6 @@ function CustomTooltip({ active, payload }) {
 // Main App
 // ============================================================
 const defaultChild = () => ({ age: 2, edu: { elementary: "public", middle: "public", high: "public", university: "public" } });
-
-const DEFAULTS = {
-  currentAge: 37, simYears: 28, hasSpouse: true, hourlyRate: 4500, monthlyHours: 80,
-  mainExpenseRate: 10, sideIncome: 200, sideExpenseRate: 15, spouseIncome: 190,
-  monthlyLiving: 20, monthlyMortgage: 9, mortgageYears: 34, investmentAssets: 3300,
-  cashAssets: 500, returnRate: 5, nisaAnnual: 120, blueReturn: "65", mutualAid: 3,
-  ideco: 6.8, isConsumptionTaxPayer: true, consumptionTaxCategory: "service",
-  inflationRate: 0, workSteps: [],
-};
-
-function parseURL() {
-  try {
-    const p = new URLSearchParams(window.location.search);
-    const s = p.get("s");
-    if (!s) return null;
-    return JSON.parse(decodeURIComponent(atob(s)));
-  } catch { return null; }
-}
-
-function syncURL(state) {
-  const encoded = btoa(encodeURIComponent(JSON.stringify(state)));
-  const url = new URL(window.location);
-  url.searchParams.set("s", encoded);
-  window.history.replaceState(null, "", url);
-}
 
 export default function App() {
   const saved = useMemo(() => parseURL(), []);
@@ -522,6 +686,7 @@ export default function App() {
   const [cashAssets, setCashAssets] = useState(d.cashAssets);
   const [returnRate, setReturnRate] = useState(d.returnRate);
   const [nisaAnnual, setNisaAnnual] = useState(d.nisaAnnual);
+  const [nisaUsed, setNisaUsed] = useState(d.nisaUsed);
   const [blueReturn, setBlueReturn] = useState(d.blueReturn);
   const [mutualAid, setMutualAid] = useState(d.mutualAid);
   const [ideco, setIdeco] = useState(d.ideco);
@@ -538,12 +703,12 @@ export default function App() {
     currentAge, simYears, hasSpouse, hourlyRate, monthlyHours, mainExpenseRate,
     sideIncome, sideExpenseRate, spouseIncome, monthlyLiving, monthlyMortgage,
     mortgageYears, children, investmentAssets, cashAssets, returnRate, nisaAnnual,
-    blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory,
+    nisaUsed, blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory,
     inflationRate, workSteps,
   }), [currentAge, simYears, hasSpouse, hourlyRate, monthlyHours, mainExpenseRate,
     sideIncome, sideExpenseRate, spouseIncome, monthlyLiving, monthlyMortgage,
     mortgageYears, children, investmentAssets, cashAssets, returnRate, nisaAnnual,
-    blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory,
+    nisaUsed, blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory,
     inflationRate, workSteps]);
 
   useEffect(() => { syncURL(allState); }, [allState]);
@@ -564,18 +729,27 @@ export default function App() {
     currentAge, simYears, hasSpouse, hourlyRate, monthlyHours, mainExpenseRate,
     sideIncome, sideExpenseRate, spouseIncome: hasSpouse ? spouseIncome : 0,
     monthlyLiving, monthlyMortgage, mortgageYears, children,
-    investmentAssets, cashAssets, returnRate, nisaAnnual,
+    investmentAssets, cashAssets, returnRate, nisaAnnual, nisaUsed,
     blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory,
     inflationRate, workSteps,
   }), [currentAge, simYears, hasSpouse, hourlyRate, monthlyHours, mainExpenseRate,
     sideIncome, sideExpenseRate, spouseIncome, monthlyLiving, monthlyMortgage,
     mortgageYears, children, investmentAssets, cashAssets, returnRate, nisaAnnual,
-    blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory,
+    nisaUsed, blueReturn, mutualAid, ideco, isConsumptionTaxPayer, consumptionTaxCategory,
     inflationRate, workSteps]);
 
   const result = useMemo(() => simulate(params), [params]);
   const year0 = result.years[0];
   const fireYear = result.fireYear;
+  const nisaRemaining = Math.max(0, 1800 - nisaUsed);
+
+  const downloadShareImage = useCallback(() => {
+    const canvas = generateShareImage(result, fireYear, currentAge);
+    const link = document.createElement("a");
+    link.download = "side-fire-result.png";
+    link.href = canvas.toDataURL("image/png");
+    link.click();
+  }, [result, fireYear, currentAge]);
 
   const inputPanel = (
     <div style={{ background: "#fff", borderRadius: 12, padding: 20, boxShadow: "0 1px 4px rgba(0,0,0,0.06)" }}>
@@ -635,7 +809,17 @@ export default function App() {
         <Slider label="投資資産" value={investmentAssets} onChange={setInvestmentAssets} min={0} max={10000} step={50} unit="万円" />
         <Slider label="現金・預金" value={cashAssets} onChange={setCashAssets} min={0} max={5000} step={50} unit="万円" />
         <Slider label="期待リターン率" value={returnRate} onChange={setReturnRate} min={0} max={10} step={0.5} unit="%" />
-        <Slider label="年間NISA投資枠" value={nisaAnnual} onChange={setNisaAnnual} min={0} max={360} step={10} unit="万円" />
+        <div style={{ borderTop: "1px solid #eee", paddingTop: 10, marginTop: 4 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#4a5060", marginBottom: 8 }}>NISA（生涯上限1,800万円）</div>
+          <Slider label="年間投資額" value={nisaAnnual} onChange={setNisaAnnual} min={0} max={360} step={10} unit="万円" />
+          <Slider label="使用済み枠" value={nisaUsed} onChange={setNisaUsed} min={0} max={1800} step={10} unit="万円" />
+          <div style={{ fontSize: 11, color: "#8a919c", padding: "4px 8px", background: "#f9fafb", borderRadius: 4 }}>
+            残枠: <span style={{ fontWeight: 600, color: nisaRemaining > 0 ? "#2d7a5f" : "#c44b3f" }}>{nisaRemaining.toLocaleString()}万円</span>
+            {nisaAnnual > 0 && nisaRemaining > 0 && (
+              <span> （最速{Math.ceil(nisaRemaining / nisaAnnual)}年で枠消化）</span>
+            )}
+          </div>
+        </div>
       </Section>
 
       <Section title="🧾 節税・社会保険" open={openSections.tax} onToggle={() => toggleSection("tax")}>
@@ -670,13 +854,22 @@ export default function App() {
             <h1 style={{ fontSize: 24, fontWeight: 700, color: "#1a2332", margin: 0 }}>サイドFIRE・フリーランス転向シミュレーター</h1>
             <p style={{ fontSize: 12, color: "#8a919c", marginTop: 6 }}>フリーランス特有の税・社会保険を考慮した資産シミュレーション</p>
           </div>
-          <button onClick={copyURL} style={{
-            fontSize: 12, color: copied ? "#fff" : "#2d7a5f", background: copied ? "#2d7a5f" : "#fff",
-            border: "1px solid #2d7a5f", borderRadius: 6, padding: "6px 12px", cursor: "pointer",
-            whiteSpace: "nowrap", marginTop: 8, transition: "all 0.2s",
-          }}>
-            {copied ? "✓ コピーしました" : "📋 設定URLをコピー"}
-          </button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button onClick={downloadShareImage} style={{
+              fontSize: 12, color: "#1a2332", background: "#fff",
+              border: "1px solid #d0d4da", borderRadius: 6, padding: "6px 12px", cursor: "pointer",
+              whiteSpace: "nowrap", marginTop: 8,
+            }}>
+              🖼 結果画像を保存
+            </button>
+            <button onClick={copyURL} style={{
+              fontSize: 12, color: copied ? "#fff" : "#2d7a5f", background: copied ? "#2d7a5f" : "#fff",
+              border: "1px solid #2d7a5f", borderRadius: 6, padding: "6px 12px", cursor: "pointer",
+              whiteSpace: "nowrap", marginTop: 8, transition: "all 0.2s",
+            }}>
+              {copied ? "✓ コピーしました" : "📋 設定URLをコピー"}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -699,7 +892,6 @@ export default function App() {
         .data-table tr.fire-row td:first-child { box-shadow: inset 3px 0 0 #16a34a; }
       `}</style>
 
-      {/* Mobile toggle */}
       <button className="mobile-input-toggle" onClick={() => setMobileShowInput(!mobileShowInput)} style={{
         display: "none", width: "100%", fontSize: 14, fontWeight: 600, color: "#2d7a5f",
         background: "#fff", border: "1px solid #2d7a5f", borderRadius: 8,
@@ -709,12 +901,10 @@ export default function App() {
       </button>
 
       <div className="sim-grid" style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 24, alignItems: "start" }}>
-        {/* ===== INPUT PANEL ===== */}
         <div className={`input-panel ${mobileShowInput ? "mobile-open" : ""}`}>
           {inputPanel}
         </div>
 
-        {/* ===== OUTPUT PANEL ===== */}
         <div>
           <FireProgressRing ratio={year0.fireRatio} fireYear={fireYear} currentAge={currentAge} fireIncome={year0.fireIncome} fireExpenses={year0.fireExpenses} />
 
@@ -791,7 +981,7 @@ export default function App() {
                     <th style={{ textAlign: "left", padding: "8px" }}>年齢</th>
                     <th>本業</th><th>副業</th><th>税・社保</th><th>手取り</th><th>配偶者</th>
                     <th>生活費</th><th>教育費</th><th>ローン</th><th>年間収支</th>
-                    <th>投資資産</th><th>現金</th><th>総資産</th><th>FIRE率</th>
+                    <th>投資資産</th><th>現金</th><th>総資産</th><th>NISA累計</th><th>FIRE率</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -815,6 +1005,7 @@ export default function App() {
                       <td>{fmtMan(d.investmentAssets)}</td>
                       <td>{fmtMan(d.cashAssets)}</td>
                       <td style={{ fontWeight: 600 }}>{fmtMan(d.totalAssets)}</td>
+                      <td>{fmtMan(d.nisaCumulative)}</td>
                       <td style={{
                         fontWeight: 600,
                         color: d.fireRatio >= 1 ? "#16a34a" : d.fireRatio >= 0.7 ? "#e88c30" : "#6b7280",
@@ -831,6 +1022,7 @@ export default function App() {
           <div style={{ fontSize: 11, color: "#aaa", marginTop: 20, lineHeight: 1.6, paddingBottom: 40 }}>
             ※ 本シミュレーターは概算です。実際の税額・保険料は自治体・控除状況により異なります。
             国民健康保険料は代表的な料率による概算値です。投資リターンは確定ではありません。
+            NISA枠は生涯投資上限1,800万円で、年間最大360万円です。
             サイドFIRE達成 = 投資資産の4%取り崩し＋副業収入＋配偶者収入 ≥ 年間総支出。
             重要な判断の際は税理士・FP等にご相談ください。
           </div>
